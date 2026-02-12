@@ -1,3 +1,43 @@
-venv
-__pycache__
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.whl
 
+# Distributions and packaging
+.Python
+build/
+dist/
+wheels/
+*.egg-info/
+lib/
+lib64/
+venv/
+env/
+.venv/
+bin/
+include/
+share/
+
+# Source control
+.hg/
+.mypy_cache/
+.pytest_cache/
+.tox/
+.coverage
+.coverage.*
+.hypothesis/
+.pytype/
+
+# Editors and IDEs
+.idea/
+.vscode/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
+pip-log.txt
