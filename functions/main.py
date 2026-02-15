@@ -5,6 +5,7 @@ import functions_framework
 from cloudevents.http.event import CloudEvent
 from .strategy import main_strategy
 
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

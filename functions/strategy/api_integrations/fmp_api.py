@@ -8,7 +8,7 @@ import certifi
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def get_jsonparsed_data(datatype, key) -> (list):
+def get_jsonparsed_data(datatype, key) -> (list|None):
     """returns data from API endpoint (arg: api url)"""
     try:
         if datatype == "gainer":

@@ -31,7 +31,7 @@
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": [],
 
-	 "postCreateCommand": "pip3 install --user -r requirements.txt",
+	 "postCreateCommand": "pip3 install --user -r functions/requirements.txt",
 
      "remoteUser": "root"
 }

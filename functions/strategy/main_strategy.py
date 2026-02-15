@@ -3,24 +3,29 @@ import os
 import logging
 from datetime import datetime
 import requests
+from dotenv import load_dotenv
 from ratelimit import limits, sleep_and_retry
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, GetOrdersRequest
-from alpaca.trading.models import Order, Position
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.models import Order, Position, TradeAccount
+from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
 from .api_integrations import poly_api, fmp_api
 from . import firestore_db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 def get_env() -> (dict):
     """access environment variables for API Secrets"""
-    env_variable_names = ['ALPACA_KEY', 'ALPACA_SECRET', 'POLY_KEY', 'FMP_KEY']
+    load_dotenv()
+    env_variable_names = ['ALPACA_KEY', 'ALPACA_SECRET', 'MASSIVE_API_KEY', 'FMP_KEY']
     env_variables = {}
     for name in env_variable_names:
-        env_variables[name] = str(os.environ.get(name))
+        env_variables[name] = str(os.getenv(name))
     return env_variables
+
+AlpacaOrderData = tuple[TradeAccount, list[Order]]
 
 class StrategyHandler():
     """
@@ -51,20 +56,24 @@ class StrategyHandler():
         check_spend = self.check_spend(allocation_limit,account_details,spent_already)
 
         return check_fund and check_spend
+    
+    @sleep_and_retry
+    @limits(calls=5, period=61)
+    def get_rsi(self, ticker:str) -> float|None:
+        rsi = poly_api.get_indicator(ticker, "rsi")
+        if type(rsi) == int:
+            return float(rsi)
 
     @sleep_and_retry
     @limits(calls=5, period=61)
-    def get_ta_data(self, ticker: str, indicator: str) -> (float)|(tuple[float, float, float]):
-        """Returns RSI or MACD value(s) from Polygon API"""
-        if indicator == "rsi":
-            rsi = poly_api.get_indicator(ticker, "rsi")
-            return float(rsi)
-        if indicator == "macd":
-            value, signal, hist = poly_api.get_indicator(ticker, "macd")
-            return float(value), float(signal), float(hist)
-        return None
+    def get_macd(self, ticker: str) -> tuple:
+        data = poly_api.get_indicator(ticker, "macd")
+        if type(data) == tuple:
+            value = data[0]
+            signal = data[1] 
+            hist = data [2]
+        return float(value), float(signal), float(hist)
 
-    #@limits(calls=200, period=61)
     def get_quote(self, ticker:str):
         """
         Gets latest stock quote from alpacapy
@@ -96,17 +105,18 @@ class StrategyHandler():
         """
         #getting new account details every call to account for changes
         account_details = self.trading_client.get_account()
-        cash_available = float(account_details.cash)
+        if type(account_details.cash) == int: # pyright: ignore
+            cash_available = float(account_details.cash) # pyright: ignore
         if self.check_if_buy(allocation, spent_already, account_details):
-            value, signal, hist = self.get_ta_data(ticker, "macd")
+            value, signal, hist = self.get_macd(ticker) 
             if value > signal and hist > 0.0:
-                rsi = self.get_ta_data(ticker, "rsi")
-                if rsi < 35.00:
+                rsi = self.get_rsi(ticker)
+                if rsi and rsi < 35.00:
                     return ("buy", cash_available)
             return ("do nothing", cash_available)
         return ("no funds", cash_available) #no funds remaining
 
-    def quantity_calc(self, signal:str, ticker:str, portval: float) -> (int):
+    def quantity_calc(self, signal:str, ticker:str, portval: float) -> (float|None):
         """
         Returns stock quantity to buy or sell
         """
@@ -123,9 +133,8 @@ class StrategyHandler():
                 return 1.00 #fail-safe making sure to buy at least 1
         elif signal == "sell":
             position = self.trading_client.get_open_position(ticker)
-            if position is not None:
-                quantity = position.qty_available
-                return quantity
+            if type(position) == Position and type(position.qty_available) == str:
+                return float(position.qty_available)
             print("Position not available")
         return None
 
@@ -139,20 +148,20 @@ class StrategyHandler():
         """
         symb = symb.upper()
         if order_type == "buy":
-            ordrtype = OrderSide.BUY
+            OT = OrderSide.BUY
         if order_type == "sell":
-            ordrtype = OrderSide.SELL
+            OT = OrderSide.SELL
         market_order_data = MarketOrderRequest(
                     symbol=str(symb),
                     qty=float(qt),
-                    side=ordrtype,
+                    side=OT,
                     #Canceled if unfilled after the closing auction
                     time_in_force=TimeInForce.DAY #(day, gtc, opg, cls, ioc, fok)
                     )
 
         return market_order_data
 
-    def execute_order(self, market_order_data: MarketOrderRequest) -> (Order):
+    def execute_order(self, market_order_data: MarketOrderRequest) -> (Order|None):
         """
         Executes a market order 
 
@@ -161,7 +170,8 @@ class StrategyHandler():
         try:
             market_order = self.trading_client.submit_order(order_data = market_order_data)
             logger.info("Market order placed!")
-            return market_order
+            if type(market_order) == Order:
+                return market_order 
         except requests.HTTPError:
             logger.error("Error occured while submitting market order: %s", requests.HTTPError)
             raise
@@ -170,13 +180,16 @@ class StrategyHandler():
         """
         Checks a position and returns a sell signal if the TA or the ROI matches
         """
-        value, signal, hist = self.get_ta_data(position.symbol, "macd")
+        macd = self.get_macd(position.symbol)
+        value = macd[0]
+        signal = macd[1]
+        hist = macd[2]
         if value < signal and hist < 0.0:
-            rsi = self.get_ta_data(position.symbol, "rsi")
-            if rsi > 65.00:
+            rsi = self.get_rsi(position.symbol)
+            if rsi and rsi > 65.00:
                 return "sell"
-
-        p_and_l = float(position.unrealized_plpc)
+        if type(position.unrealized_plpc)==str:
+            p_and_l = float(position.unrealized_plpc)
         if p_and_l >= 0.05:
             return "sell"
 
@@ -192,11 +205,10 @@ class WatchlistHandler():
         self.max_stock_price = max_stock_price
         self.max_watchlist_len = max_watchlist_len
 
-    def create_watchlist(self) -> (list):
+    def create_watchlist(self) -> (list ):
         """returns the watchlist of 30 stocks to focus on"""
         stock_list = fmp_api.get_jsonparsed_data("active", self.secret['FMP_KEY'])
-
-        return stock_list
+        return stock_list if stock_list else []
 
     def approve_watchlist(self, stock_list: list[dict]) -> (list):
         """Approves watchlist"""
@@ -230,10 +242,8 @@ class StrategyExecution():
         """
         logger.info("Buy strat has begun!")
         spent_already = 0.0
-        #create a new watchlist -> watchlist
         stocklist = self.watchlist_handler.create_watchlist()
-        watchlist = self.watchlist_handler.approve_watchlist(stocklist)
-        # run operations on new watchlist
+        watchlist = self.watchlist_handler.approve_watchlist(stocklist) 
         orderlist = []
         for stock in watchlist:
             ticker = stock["symbol"]
@@ -249,7 +259,7 @@ class StrategyExecution():
                         )
                     order = self.strategy_handler.execute_order(order_data)
                     orderlist.append(order)
-                    if order.filled_avg_price is not None:
+                    if order and order.filled_avg_price is not None:
                         spent_already += float(order.filled_avg_price)
                     else:
                         quote = self.strategy_handler.get_quote(ticker)
@@ -280,47 +290,40 @@ class StrategyExecution():
         sell_orders = []
         if len(positions) > 0:
             for position in positions:
-                sell_signal = self.strategy_handler.sell_signal(position)
-                if sell_signal == "sell": #sell all of the current position
-                    order_data = self.strategy_handler.create_order_data(
-                        position.symbol, position.qty_available, "sell"
-                        )
-                    order = self.strategy_handler.execute_order(order_data)
-                    sell_orders.append(order)
-                    logger.info("Sell order placed: %s", order)
+                if type(position) == Position:
+                    sell_signal = self.strategy_handler.sell_signal(position)
+                    if sell_signal == "sell":
+                        order_data = self.strategy_handler.create_order_data(
+                            position.symbol, position.qty_available, "sell"
+                            )
+                        order = self.strategy_handler.execute_order(order_data)
+                        sell_orders.append(order)
+                        logger.info("Sell order placed: %s", order)
 
         return sell_orders
 
-    def create_data(self)-> (tuple[str, dict]):
+    def create_data(self)-> (tuple[TradeAccount, list[Order]]):
         """ 
-        Creates and returns EOD DB data
+        Creates and returns end-of-day data for storage in DB
         """
-        try:
-            trading_account = self.trading_client.get_account()
-        except requests.HTTPError:
-            logger.error(
-                "HTTP Error getting account from Alpaca to create data: %s", requests.HTTPError
-                )
-            raise
+        trading_account = self.trading_client.get_account()
+        if type(trading_account) != TradeAccount:
+            raise Exception("Unsupported Trade Account Response")
 
         current_date = datetime.now().date()
         yesterday_datetime = datetime.combine(current_date, datetime.min.time())
-
         order_request = GetOrdersRequest(
-            status="closed",
+            status=QueryOrderStatus("closed"),
             limit=500,
             after=yesterday_datetime
         )
+        orders = self.trading_client.get_orders(order_request)
+        
+        if type(orders) != list[Order]:
+            raise Exception("Unsupported Orders Response")
 
-        try:
-            orders = self.trading_client.get_orders(order_request)
-        except requests.HTTPError:
-            logger.error(
-                "HTTP Error getting orders from Alpaca to create data: %s", requests.HTTPError
-                )
-            raise
+        return trading_account, orders 
 
-        return trading_account, orders
 
     def push_data(self, side: str, orders: list[Order]):
         """
@@ -344,16 +347,20 @@ class ClientInstance:
     def execute_buy_strategy(self):
         """initialize a buy instance and push results"""
         buy_orders = self.strategyexec.buy_strategy()
-        self.strategyexec.push_data("buy", buy_orders)
+        if buy_orders:
+            self.strategyexec.push_data("buy", buy_orders)
 
     def execute_sell_strategy(self):
         """initialize a sell instanceand push results"""
         sell_orders = self.strategyexec.sell_strategy()
-        self.strategyexec.push_data("sell", sell_orders)
+        if sell_orders:
+            self.strategyexec.push_data("sell", sell_orders)
 
     def push_port_orders(self):
         """fetch and push portfolio and pure-order data"""
-        account_info, order_list = self.strategyexec.create_data()
+        data = self.strategyexec.create_data() 
+        if data is not None:
+            account_info, order_list = data
         firestore_db.push_portfolio(account_info)
         firestore_db.push_order(order_list)
 

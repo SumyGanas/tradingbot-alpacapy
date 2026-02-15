@@ -19,6 +19,7 @@ env/
 bin/
 include/
 share/
+.env
 
 # Source control
 .hg/
@@ -41,3 +42,4 @@ Thumbs.db
 # Misc
 *.log
 pip-log.txt
+*.local
