@@ -1,0 +1,37 @@
+{
+    "build": {
+        "dockerfile": "../Dockerfile",
+        "context": "."
+    },
+    "mounts": [
+        "source=gcloud-config,target=/root/.config/gcloud,type=volume"
+    ],
+    "features": {
+        "ghcr.io/devcontainers/features/common-utils:2":{
+            "installZsh": "true",
+            "username": "vscode",
+            "userUid": "1000",
+            "userGid": "1000",
+            "upgradePackages": "true"
+        },
+        "ghcr.io/devcontainers/features/python:1": "none",
+        "ghcr.io/devcontainers/features/node:1": "none",
+        "ghcr.io/devcontainers/features/git:1": {
+            "version": "latest",
+            "ppa": "false"
+        }    
+    },
+	"customizations": {
+		"vscode": {
+			"settings": {
+				"python.defaultInterpreterPath": "/usr/local/bin/python"
+			}
+		}
+	},
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+
+	 "postCreateCommand": "pip3 install --user -r requirements.txt",
+
+     "remoteUser": "root"
+}
