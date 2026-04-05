@@ -307,7 +307,7 @@ class StrategyExecution():
         Creates and returns end-of-day data for storage in DB
         """
         trading_account = self.trading_client.get_account()
-        if type(trading_account) != TradeAccount:
+        if not isinstance(trading_account, TradeAccount):
             raise Exception("Unsupported Trade Account Response")
 
         current_date = datetime.now().date()
@@ -319,7 +319,7 @@ class StrategyExecution():
         )
         orders = self.trading_client.get_orders(order_request)
         
-        if type(orders) != list[Order]:
+        if not isinstance(orders, list):
             raise Exception("Unsupported Orders Response")
 
         return trading_account, orders 
